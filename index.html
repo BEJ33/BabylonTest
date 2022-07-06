@@ -54,45 +54,194 @@
         var scene = null;
         var sceneToRender = null;
         var createDefaultEngine = function() { return new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true,  disableWebGL2Support: false}); };
-        var createScene = function () {
-    // This creates a basic Babylon Scene object (non-mesh)
+        // Colyseus SDK (비동기로 로드)
+var scriptUrl = "https://unpkg.com/colyseus.js@0.14.13/dist/colyseus.js";
+var externalScript = document.createElement("script");
+externalScript.src = scriptUrl;
+document.head.appendChild(externalScript);
+
+var ROOM_NAME = "my_room";
+var body;
+var player;
+var room;
+var colyseusSDK = undefined;
+
+var createScene = function () {
     var scene = new BABYLON.Scene(engine);
+    
+    // 카메라 설정
+    var camera = new BABYLON.ArcRotateCamera("Camera", -Math.PI/2, Math.PI/3, 10, BABYLON.Vector3.Zero(), scene);
+    // camera.attachControl(canvas, true);
 
-    // // This creates and positions a free camera (non-mesh)
-    // var camera = new BABYLON.FreeCamera("camera1", new BABYLON.Vector3(0, 5, -10), scene);
-
-    // // This targets the camera to scene origin
-    // camera.setTarget(BABYLON.Vector3.Zero());
-    var camera = new BABYLON.ArcRotateCamera("camera", 
-                                            BABYLON.Tools.ToRadians(-90),
-                                            BABYLON.Tools.ToRadians(65), 
-                                            15,
-                                            BABYLON.Vector3.Zero(), 
-                                            scene);
-
-    // This attaches the camera to the canvas
-    camera.attachControl(canvas, true);
-
-    // This creates a light, aiming 0,1,0 - to the sky (non-mesh)
+    // 라이트 세팅
     var light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
-
-    // Default intensity is 1. Let's dim the light a small amount
     light.intensity = 0.7;
-
-    // Our built-in 'ground' shape.
-    var ground = BABYLON.MeshBuilder.CreateGround("ground", {width: 6, height: 6}, scene);
+    
+    // 빌트인 ground 생성 후 색 설정
+    var ground = BABYLON.MeshBuilder.CreateGround("ground", {width: 10, height: 10}, scene);
     let groundMaterial = new BABYLON.StandardMaterial("Ground Material", scene);
     ground.material = groundMaterial;
+    
+    // 플레이어 컨테이너 (이동부분 처리)
+    player = BABYLON.MeshBuilder.CreateBox("player", {size:.5}, scene);
+    player.isVisible = false;
+    player.position.y = 1;
+    player.isPickable = false;
 
-    let groundTexture = new BABYLON.Texture(Assets.textures.checkerboard_basecolor_png.rootUrl, scene);
-    ground.material.diffuseTexture = groundTexture;
-    // ground.material.diffuseColor = BABYLON.Color3.Yellow();
+    // 플레이어 컨테이너 (회전부분 처리)
+    body = BABYLON.MeshBuilder.CreateBox("body",{size:.5},scene);
+    body.isVisible = false;
 
-    BABYLON.SceneLoader.ImportMesh("", Assets.meshes.Yeti.rootUrl, Assets.meshes.Yeti.filename, scene, function(newMeshes){
-        newMeshes[0].scaling = new BABYLON.Vector3(0.15, 0.1, 0.15);
+    body.parent = player;
+    camera.parent = player;
+
+    var playerPosition = player.position.clone();
+    const ignoreDistance = 0.1;
+
+    // 키보드 입력 이벤트 설정
+    var inputMap = {};
+    scene.actionManager = new BABYLON.ActionManager(scene);
+    scene.actionManager.registerAction(new BABYLON.ExecuteCodeAction(BABYLON.ActionManager.OnKeyDownTrigger, 
+                                        function (evt) {
+        inputMap[evt.sourceEvent.key] = evt.sourceEvent.type == "keydown";
+    }));
+    scene.actionManager.registerAction(new BABYLON.ExecuteCodeAction(BABYLON.ActionManager.OnKeyUpTrigger,
+                                        function (evt) {
+        inputMap[evt.sourceEvent.key] = evt.sourceEvent.type == "keydown";
+    }));
+
+    // 키보드 입력 받기
+    scene.onBeforeRenderObservable.add(()=> {
+        let targetPosition = player.position;
+        if(inputMap["w"] || inputMap["ArrowUp"]){
+            targetPosition.z+=0.05;
+            body.rotation.y = 0;
+        } 
+        if(inputMap["a"] || inputMap["ArrowLeft"]){
+            targetPosition.x-=0.05;
+            body.rotation.y = 3*Math.PI/2;
+        } 
+        if(inputMap["s"] || inputMap["ArrowDown"]){
+            targetPosition.z-=0.05;
+            body.rotation.y = 2*Math.PI/2;
+        } 
+        if(inputMap["d"] || inputMap["ArrowRight"]){
+            targetPosition.x+=0.05;
+            body.rotation.y =  Math.PI/2;
+        }
+        
+        // 플레이어 이동시 서버에 위치 보내주는 부분
+        if(room !== undefined) {
+            if(BABYLON.Vector3.Distance(targetPosition, playerPosition) > ignoreDistance)
+            {
+                // Send position update to the server
+                room.send("updatePosition", {
+                    x: targetPosition.x,
+                    y: targetPosition.y,
+                    z: targetPosition.z,
+                });
+                playerPosition = targetPosition.clone();
+            }
+        }
+        player.position = targetPosition;
     });
 
+    //  Colyseus SDK script가 로드 된 뒤 씬 시작
+    externalScript.onload = function() {
+       buildScene(scene);
+    };
+
+    scene.onDispose = function() {
+        console.log("leave...");
+        room.leave();
+    }
+
     return scene;
+}
+var buildScene = async function(scene){
+
+    console.log("Colyseus SDK loaded", colyseusSDK);
+
+    colyseusSDK = new Colyseus.Client("ws://localhost:2567"); 
+    room = await colyseusSDK.joinOrCreate(ROOM_NAME);
+    
+    // 플레이어 배열
+    var playerEntities = {};
+    var playerNextPosition = {};
+
+    // 플레이어 접속시 처리 부분
+    room.state.players.onAdd = (player, sessionId) => {
+        console.log("A player has joined! Their unique session id is", sessionId);
+        var isCurrentPlayer = (sessionId === room.sessionId);
+
+        // 본인일 경우 특정 메쉬 생성
+        if(isCurrentPlayer)
+        {
+            BABYLON.SceneLoader.ImportMeshAsync(null, 
+                                        "https://raw.githubusercontent.com/BEJ33/BabylonTest/main/", 
+                                        "Thonker.glb", 
+                                        scene).then((result) =>{
+                            const player = result.meshes[0];
+                            player.parent = body;        
+
+                            playerEntities[sessionId] = player; 
+            });
+        }
+        else
+        {
+            var sphere = BABYLON.MeshBuilder.CreateSphere(`player-${sessionId}`, 
+            {
+                segments: 8,
+                diameter: 0.5
+            });
+
+            // 본인을 제외한 플레이어 메쉬 및 색 변경
+            sphere.material = new BABYLON.StandardMaterial(`player-material-${sessionId}`);
+            sphere.material.emissiveColor = BABYLON.Color3.Gray();
+
+            // 플레이어 위치 설정
+            let updatePosition = function() {
+                sphere.position.set(player.x, player.y, player.z); 
+            }
+
+            // 플레이어 위치 변경시 받아와서 처리하는 부분
+            player.listen("x", (newX, prevX) => {
+                player.x = newX;
+                console.log(sessionId, "Moved X");
+                updatePosition();
+            });
+
+             player.listen("y", (newY, prevY) => {
+                player.y = newY;
+                console.log(sessionId, "Moved Y");
+                updatePosition();
+            });
+
+            player.listen("z", (newZ, prevZ) => {
+                player.z = newZ;
+                console.log(sessionId, "Moved Z");
+                updatePosition();
+            }); 
+
+            playerEntities[sessionId] = sphere;
+            updatePosition(); 
+        }     
+        //console.log(playerEntities, playerEntities[sessionId], sessionId);
+    };
+    
+    
+    
+    // 플레이어 접속 종료시 처리
+    room.state.players.onRemove = (player, sessionId) => {
+        playerEntities[sessionId].dispose();
+        delete playerEntities[sessionId];
+        delete playerNextPosition[sessionId];
+    };
+
+    // // on room disconnection
+    room.onLeave(code => {
+       console.log("player left the room.");
+    });
 };
                 window.initFunction = async function() {
                     

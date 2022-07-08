@@ -71,7 +71,6 @@ var createScene = function () {
     
     // 카메라 설정
     var camera = new BABYLON.ArcRotateCamera("Camera", -Math.PI/2, Math.PI/3, 10, BABYLON.Vector3.Zero(), scene);
-    // camera.attachControl(canvas, true);
 
     // 라이트 세팅
     var light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
@@ -86,7 +85,6 @@ var createScene = function () {
     player = BABYLON.MeshBuilder.CreateBox("player", {size:.5}, scene);
     player.isVisible = false;
     player.position.y = 1;
-    player.isPickable = false;
 
     // 플레이어 컨테이너 (회전부분 처리)
     body = BABYLON.MeshBuilder.CreateBox("body",{size:.5},scene);
@@ -162,12 +160,12 @@ var buildScene = async function(scene){
 
     console.log("Colyseus SDK loaded", colyseusSDK);
 
-    colyseusSDK = new Colyseus.Client("ws://192.168.0.158:2567"); 
+// colyseusSDK = new Colyseus.Client("ws://172.72.224.67:2567"); 
+    colyseusSDK = new Colyseus.Client("ws://localhost:2567"); 
     room = await colyseusSDK.joinOrCreate(ROOM_NAME);
     
     // 플레이어 배열
     var playerEntities = {};
-    var playerNextPosition = {};
 
     // 플레이어 접속시 처리 부분
     room.state.players.onAdd = (player, sessionId) => {
@@ -194,10 +192,6 @@ var buildScene = async function(scene){
                 segments: 8,
                 diameter: 0.5
             });
-
-            // 본인을 제외한 플레이어 메쉬 및 색 변경
-            sphere.material = new BABYLON.StandardMaterial(`player-material-${sessionId}`);
-            sphere.material.emissiveColor = BABYLON.Color3.Gray();
 
             // 플레이어 위치 설정
             let updatePosition = function() {
@@ -235,7 +229,6 @@ var buildScene = async function(scene){
     room.state.players.onRemove = (player, sessionId) => {
         playerEntities[sessionId].dispose();
         delete playerEntities[sessionId];
-        delete playerNextPosition[sessionId];
     };
 
     // // on room disconnection
